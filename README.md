@@ -1,0 +1,414 @@
+# C++ Message Queue & State Machine System
+
+A comprehensive C++ library combining a thread-safe message queue system with an event-driven state machine for building robust, production-ready applications.
+
+## Overview
+
+This library provides two integrated systems:
+
+### Message Queue System
+
+- **Thread-safe operations**: All queue operations are protected by mutexes and condition variables
+- **Multi-threaded processing**: Configurable worker threads for parallel message processing
+- **Extensible design**: Easy to create custom message types by inheriting from the `Message` base class
+- **Graceful shutdown**: Clean start/stop mechanisms for production use
+
+### State Machine System
+
+- **Event-driven transitions**: Trigger state changes based on events
+- **State lifecycle callbacks**: `onEnter()`, `onExit()`, `onUpdate()`, and `onEvent()` hooks
+- **Transition guards**: Conditional transitions with guard functions
+- **State history tracking**: Monitor state transitions over time
+- **Thread-safe**: All operations are protected for concurrent access
+
+### Common Features
+
+- **Modern C++**: Uses C++17 features including `std::optional`, smart pointers, and threading primitives
+- **Production-ready**: Designed for real-world applications with error handling and recovery
+
+## Architecture
+
+The system consists of two main subsystems that work together:
+
+### Message Queue System
+
+1. **Message**: Abstract base class defining the interface for all message types
+2. **MessageQueue**: Thread-safe FIFO queue for storing messages
+3. **MessageHandler**: Multi-threaded processor that consumes messages from the queue
+
+### State Machine System
+
+1. **State**: Abstract base class defining the interface for all state types
+2. **StateMachine**: Manages states, transitions, and events
+3. **Example States**: `InitState`, `ActiveState`, `ErrorState` (provided as examples)
+
+### Class Diagram
+
+```
+Message Queue System:
+Message (abstract)
+    ↑
+    ├── DataMessage
+    └── EventMessage
+
+MessageQueue
+    ↓ (uses)
+MessageHandler
+
+State Machine System:
+State (abstract)
+    ↑
+    ├── InitState
+    ├── ActiveState
+    └── ErrorState
+
+StateMachine
+    ↓ (manages)
+State instances
+```
+
+### Integration
+
+The systems can work independently or together. The example in `main.cpp` demonstrates a **Data Ingestion Service** that:
+
+- Uses the state machine to manage service lifecycle (Init → Active → Error → Recovery)
+- Uses the message queue to process incoming data
+- Integrates both systems so message processing can trigger state transitions
+
+## Quick Start
+
+### Message Queue Usage
+
+```cpp
+#include "include/MessageQueue.h"
+#include "include/MessageHandler.h"
+#include "include/MessageTypes.h"
+
+// Create queue and handler
+MessageQueue queue;
+MessageHandler handler(queue, 2); // 2 worker threads
+
+// Start processing
+handler.start();
+
+// Enqueue messages
+auto msg = std::make_shared<DataMessage>("id-1", "Hello, World!");
+queue.enqueue(msg);
+
+// ... process more messages ...
+
+// Stop processing
+handler.stop();
+```
+
+### State Machine Usage
+
+```cpp
+#include "include/StateMachine.h"
+#include "include/ExampleStates.h"
+
+// Create state machine
+StateMachine sm;
+
+// Add states
+sm.addState("init", std::make_shared<InitState>());
+sm.addState("active", std::make_shared<ActiveState>());
+sm.addState("error", std::make_shared<ErrorState>());
+
+// Define transitions
+sm.addTransition("init", "init_complete", "active");
+sm.addTransition("active", "error_occurred", "error");
+sm.addTransition("error", "recover", "init");
+
+// Start state machine
+sm.setInitialState("init");
+sm.start();
+
+// Trigger events to change states
+sm.triggerEvent("init_complete");  // init → active
+sm.triggerEvent("error_occurred", std::string("Error message"));  // active → error
+sm.triggerEvent("recover");  // error → init
+
+// Stop state machine
+sm.stop();
+```
+
+### Integrated Example
+
+The `main.cpp` file includes a complete **Data Ingestion Service** example that demonstrates:
+
+- System initialization with state machine (Init → Active)
+- Message processing with worker threads
+- Error handling and recovery (Active → Error → Active)
+- Integration between message queue and state machine
+
+Run the example:
+
+```bash
+./build.sh run
+```
+
+## Building
+
+### Requirements
+
+- CMake 3.15 or higher
+- C++17 compatible compiler
+- Conan (for dependency management)
+
+### Build Steps
+
+```bash
+# Install dependencies
+conan install . --output-folder=build --build=missing
+
+# Build
+conan build . --output-folder=build
+
+# Run
+./build/src/cpp-messgage-queue
+```
+
+Or use the provided build script:
+
+```bash
+./build.sh run
+```
+
+## Documentation
+
+### Generating Documentation
+
+This project uses [Doxygen](https://www.doxygen.nl/) for API documentation generation.
+
+#### Install Doxygen
+
+**macOS:**
+
+```bash
+brew install doxygen graphviz
+```
+
+**Ubuntu/Debian:**
+
+```bash
+sudo apt-get install doxygen graphviz
+```
+
+**Windows:**
+Download from [Doxygen website](https://www.doxygen.nl/download.html)
+
+#### Generate Documentation
+
+```bash
+# Generate HTML documentation
+doxygen Doxyfile
+
+# Documentation will be in docs/html/index.html
+```
+
+Or use the provided script:
+
+```bash
+./generate_docs.sh
+```
+
+### Viewing Documentation
+
+After generation, open `docs/html/index.html` in your web browser.
+
+## API Reference
+
+### MessageQueue
+
+Thread-safe message queue for storing and retrieving messages.
+
+**Key Methods:**
+
+- `void enqueue(MessagePtr message)` - Add message to queue
+- `std::optional<MessagePtr> dequeue()` - Blocking dequeue
+- `std::optional<MessagePtr> tryDequeue()` - Non-blocking dequeue
+- `size_t size() const` - Get queue size
+- `bool empty() const` - Check if empty
+- `void stop()` - Stop the queue
+
+### MessageHandler
+
+Multi-threaded message processor.
+
+**Key Methods:**
+
+- `void start()` - Start processing messages
+- `void stop()` - Stop processing
+- `bool isRunning() const` - Check if running
+- `void setMessageProcessor(std::function<void(MessagePtr)> processor)` - Set custom processor
+
+### StateMachine
+
+Event-driven state machine for managing application states.
+
+**Key Methods:**
+
+- `bool addState(const std::string& name, StatePtr state)` - Add a state
+- `bool addTransition(const std::string& from, const std::string& event, const std::string& to)` - Add transition
+- `bool setInitialState(const std::string& name)` - Set initial state
+- `bool start()` - Start the state machine
+- `void stop()` - Stop the state machine
+- `bool triggerEvent(const std::string& event, const std::any& data)` - Trigger state transition
+- `std::string getCurrentState() const` - Get current state name
+- `std::vector<std::string> getStateHistory(size_t maxHistory)` - Get state history
+- `void setTransitionCallback(callback)` - Set callback for transitions
+
+### Message Types
+
+#### DataMessage
+
+For data ingestion scenarios.
+
+```cpp
+auto msg = std::make_shared<DataMessage>("id", "data payload");
+```
+
+#### EventMessage
+
+For system events with severity levels.
+
+```cpp
+auto event = std::make_shared<EventMessage>(
+    "event-id",
+    EventMessage::EventType::ERROR,
+    "description"
+);
+```
+
+### State Types
+
+#### InitState
+
+Initialization state - system performs setup tasks.
+
+#### ActiveState
+
+Active operational state - system is processing normally.
+
+#### ErrorState
+
+Error state - system has encountered an error and can recover.
+
+## Creating Custom Types
+
+### Custom Message Types
+
+To create a custom message type, inherit from `Message`:
+
+```cpp
+class CustomMessage : public Message {
+public:
+    CustomMessage(const std::string& id, /* your params */)
+        : id_(id), /* initialize */ {}
+
+    std::string getType() const override {
+        return "CustomMessage";
+    }
+
+    std::string getId() const override {
+        return id_;
+    }
+
+    std::chrono::system_clock::time_point getTimestamp() const override {
+        return timestamp_;
+    }
+
+    void process() override {
+        // Your processing logic
+    }
+
+    std::string toString() const override {
+        // String representation
+    }
+
+private:
+    std::string id_;
+    std::chrono::system_clock::time_point timestamp_;
+    // Your members
+};
+```
+
+### Custom State Types
+
+To create a custom state, inherit from `State`:
+
+```cpp
+class CustomState : public State {
+public:
+    std::string getName() const override {
+        return "custom";
+    }
+
+    void onEnter(const std::any& context, StateMachine& sm) override {
+        // Called when entering this state
+    }
+
+    void onExit(StateMachine& sm) override {
+        // Called when exiting this state
+    }
+
+    void onUpdate(StateMachine& sm) override {
+        // Called periodically while in this state
+    }
+
+    bool onEvent(const std::string& event, const std::any& data,
+                 StateMachine& sm) override {
+        // Handle events specific to this state
+        return false; // Return true if event was handled
+    }
+};
+```
+
+## Integration Example
+
+Here's how to integrate both systems:
+
+```cpp
+// Create both systems
+MessageQueue queue;
+MessageHandler handler(queue, 3);
+StateMachine sm;
+
+// Setup state machine
+sm.addState("init", std::make_shared<InitState>());
+sm.addState("active", std::make_shared<ActiveState>());
+sm.addState("error", std::make_shared<ErrorState>());
+sm.addTransition("init", "init_complete", "active");
+sm.addTransition("active", "error_occurred", "error");
+sm.addTransition("error", "recover", "active");
+
+// Integrate: message processor can trigger state transitions
+handler.setMessageProcessor([&sm](MessagePtr msg) {
+    if (auto eventMsg = std::dynamic_pointer_cast<EventMessage>(msg)) {
+        if (eventMsg->getEventType() == EventMessage::EventType::ERROR) {
+            sm.triggerEvent("error_occurred", eventMsg->getDescription());
+        }
+    }
+    msg->process();
+});
+
+// Start both systems
+sm.setInitialState("init");
+sm.start();
+handler.start();
+
+// Use both systems...
+```
+
+## Thread Safety
+
+All public methods of `MessageQueue`, `MessageHandler`, and `StateMachine` are thread-safe and can be called from multiple threads concurrently.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Author
+
+rsikder
