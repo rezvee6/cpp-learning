@@ -91,8 +91,19 @@ elif [ "$1" = "run" ]; then
     conan build . --output-folder=$BUILD_DIR
     
     cd $BUILD_DIR
-    echo "Running the main application..."
-    ./src/cpp-messgage-queue
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake
+    cmake --build . --config Release
+    
+    echo ""
+    echo "✓ Build complete!"
+    echo ""
+    echo "To run the gateway:"
+    echo "  ./src/cpp-messgage-queue"
+    echo ""
+    echo "To run the ECU simulator (in another terminal):"
+    echo "  ./tools/ecu_simulator"
+    echo ""
+    echo "See TESTING.md for detailed testing instructions."
     cd ..
 else
     echo "Invalid argument: $1. Use 'run', 'test', or 'coverage'."

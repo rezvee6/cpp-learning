@@ -12,6 +12,7 @@ This library provides two integrated systems:
 - **Multi-threaded processing**: Configurable worker threads for parallel message processing
 - **Extensible design**: Easy to create custom message types by inheriting from the `Message` base class
 - **Graceful shutdown**: Clean start/stop mechanisms for production use
+- **Built-in message types**: `DataMessage`, `EventMessage`, and `ECUDataMessage` for common use cases
 
 ### State Machine System
 
@@ -25,6 +26,7 @@ This library provides two integrated systems:
 
 - **Modern C++**: Uses C++17 features including `std::optional`, smart pointers, and threading primitives
 - **Production-ready**: Designed for real-world applications with error handling and recovery
+- **Example application**: Complete ECU Data Gateway demonstrating real-world usage
 
 ## Architecture
 
@@ -49,7 +51,8 @@ Message Queue System:
 Message (abstract)
     ↑
     ├── DataMessage
-    └── EventMessage
+    ├── EventMessage
+    └── ECUDataMessage
 
 MessageQueue
     ↓ (uses)
@@ -69,11 +72,12 @@ State instances
 
 ### Integration
 
-The systems can work independently or together. The example in `main.cpp` demonstrates a **Data Ingestion Service** that:
+The systems can work independently or together. The example in `main.cpp` demonstrates an **ECU Data Gateway** that:
 
-- Uses the state machine to manage service lifecycle (Init → Active → Error → Recovery)
-- Uses the message queue to process incoming data
-- Integrates both systems so message processing can trigger state transitions
+- Receives vehicle ECU data via TCP socket
+- Uses the message queue to process incoming ECU messages
+- Stores and exposes ECU data via REST API
+- Demonstrates real-world usage of the message queue system
 
 ## Quick Start
 
@@ -230,7 +234,9 @@ To view coverage reports:
 - `tests/test_message_queue.cpp` - MessageQueue unit tests
 - `tests/test_message_handler.cpp` - MessageHandler unit tests
 - `tests/test_state_machine.cpp` - StateMachine unit tests
+- `tests/test_message_types.cpp` - Message type tests (including ECUDataMessage)
 - `tests/test_integration.cpp` - Integration tests for both systems
+- `tests/test_gateway.cpp` - Gateway functionality tests
 
 ## Documentation
 
@@ -336,6 +342,19 @@ auto event = std::make_shared<EventMessage>(
     EventMessage::EventType::ERROR,
     "description"
 );
+```
+
+#### ECUDataMessage
+
+For vehicle Electronic Control Unit (ECU) data with structured key-value pairs.
+
+```cpp
+std::map<std::string, std::string> data = {
+    {"rpm", "2500"},
+    {"temperature", "85.5"},
+    {"pressure", "1.2"}
+};
+auto ecuMsg = std::make_shared<ECUDataMessage>("ecu-1", "engine", data);
 ```
 
 ### State Types
@@ -457,6 +476,82 @@ handler.start();
 
 // Use both systems...
 ```
+
+## ECU Gateway Application
+
+The project includes a complete **ECU Data Gateway** application that demonstrates the message queue system in a real-world scenario.
+
+### Overview
+
+The ECU Gateway:
+
+- Receives vehicle ECU data from simulators via TCP socket (port 8080)
+- Processes and stores ECU data in memory
+- Exposes a REST API (port 8081) for clients to consume ECU data
+
+### Building and Running
+
+1. **Build the project:**
+
+   ```bash
+   ./build.sh run
+   ```
+
+2. **Start the gateway:**
+
+   ```bash
+   cd build
+   ./src/cpp-messgage-queue
+   ```
+
+3. **Start the ECU simulator** (in another terminal):
+
+   ```bash
+   cd build
+   ./tools/ecu_simulator
+   ```
+
+   Or with custom parameters:
+
+   ```bash
+   ./tools/ecu_simulator [host] [port] [duration_seconds] [interval_ms]
+   ```
+
+### REST API Endpoints
+
+- `GET /health` - Health check
+- `GET /api/ecus` - List all ECU IDs
+- `GET /api/ecus/{ecuId}` - Get data for specific ECU (e.g., `engine`, `transmission`, `brake`, `battery`)
+- `GET /api/data` - Get all ECU data
+
+### Example Usage
+
+```bash
+# Health check
+curl http://localhost:8081/health
+
+# List all ECUs
+curl http://localhost:8081/api/ecus
+
+# Get engine data
+curl http://localhost:8081/api/ecus/engine
+
+# Get all ECU data
+curl http://localhost:8081/api/data
+```
+
+### ECU Simulator
+
+The `tools/ecu_simulator` generates realistic test data from 4 vehicle ECUs:
+
+- **Engine**: RPM, temperature, pressure, throttle position
+- **Transmission**: Gear, speed, temperature
+- **Brake**: Brake pressure, ABS status
+- **Battery**: Voltage, current, temperature, state of charge
+
+### Testing
+
+See [TESTING.md](TESTING.md) for detailed testing instructions and examples.
 
 ## Thread Safety
 

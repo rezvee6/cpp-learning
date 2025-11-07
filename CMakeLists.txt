@@ -12,6 +12,9 @@ enable_testing()
 # Add source directory
 add_subdirectory(src)
 
+# Add tools directory
+add_subdirectory(tools)
+
 # Add tests if requested
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)

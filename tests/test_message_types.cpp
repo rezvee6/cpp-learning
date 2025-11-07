@@ -131,3 +131,130 @@ TEST_F(MessageTypesTest, EventMessageAllTypes) {
     EXPECT_EQ(error->getEventType(), EventMessage::EventType::ERROR);
 }
 
+// Test ECUDataMessage creation and basic properties
+TEST_F(MessageTypesTest, ECUDataMessageCreation) {
+    std::map<std::string, std::string> data = {
+        {"rpm", "2500"},
+        {"temperature", "85.5"},
+        {"pressure", "1.2"}
+    };
+    
+    auto msg = std::make_shared<ECUDataMessage>("ecu-1", "engine", data);
+    
+    EXPECT_EQ(msg->getType(), "ECUDataMessage");
+    EXPECT_EQ(msg->getId(), "ecu-1");
+    EXPECT_EQ(msg->getECUId(), "engine");
+    EXPECT_NE(msg->getTimestamp().time_since_epoch().count(), 0);
+}
+
+// Test ECUDataMessage getData
+TEST_F(MessageTypesTest, ECUDataMessageGetData) {
+    std::map<std::string, std::string> data = {
+        {"rpm", "3000"},
+        {"temperature", "90"},
+        {"throttle_position", "45.5"}
+    };
+    
+    auto msg = std::make_shared<ECUDataMessage>("ecu-2", "engine", data);
+    const auto& retrievedData = msg->getData();
+    
+    EXPECT_EQ(retrievedData.size(), 3);
+    EXPECT_EQ(retrievedData.at("rpm"), "3000");
+    EXPECT_EQ(retrievedData.at("temperature"), "90");
+    EXPECT_EQ(retrievedData.at("throttle_position"), "45.5");
+}
+
+// Test ECUDataMessage getValue
+TEST_F(MessageTypesTest, ECUDataMessageGetValue) {
+    std::map<std::string, std::string> data = {
+        {"gear", "3"},
+        {"speed", "60.5"},
+        {"temperature", "75"}
+    };
+    
+    auto msg = std::make_shared<ECUDataMessage>("ecu-3", "transmission", data);
+    
+    auto gear = msg->getValue("gear");
+    EXPECT_TRUE(gear.has_value());
+    EXPECT_EQ(gear.value(), "3");
+    
+    auto speed = msg->getValue("speed");
+    EXPECT_TRUE(speed.has_value());
+    EXPECT_EQ(speed.value(), "60.5");
+    
+    auto missing = msg->getValue("missing_key");
+    EXPECT_FALSE(missing.has_value());
+}
+
+// Test ECUDataMessage toString
+TEST_F(MessageTypesTest, ECUDataMessageToString) {
+    std::map<std::string, std::string> data = {
+        {"voltage", "12.5"},
+        {"current", "2.3"},
+        {"state_of_charge", "85.0"}
+    };
+    
+    auto msg = std::make_shared<ECUDataMessage>("ecu-4", "battery", data);
+    std::string str = msg->toString();
+    
+    EXPECT_NE(str.find("ECUDataMessage"), std::string::npos);
+    EXPECT_NE(str.find("ecu-4"), std::string::npos);
+    EXPECT_NE(str.find("battery"), std::string::npos);
+    EXPECT_NE(str.find("voltage"), std::string::npos);
+    EXPECT_NE(str.find("12.5"), std::string::npos);
+}
+
+// Test ECUDataMessage process
+TEST_F(MessageTypesTest, ECUDataMessageProcess) {
+    std::map<std::string, std::string> data = {
+        {"brake_pressure", "50.0"},
+        {"abs_active", "true"}
+    };
+    
+    auto msg = std::make_shared<ECUDataMessage>("ecu-5", "brake", data);
+    // Should not crash
+    msg->process();
+}
+
+// Test ECUDataMessage with empty data
+TEST_F(MessageTypesTest, ECUDataMessageEmptyData) {
+    std::map<std::string, std::string> emptyData;
+    auto msg = std::make_shared<ECUDataMessage>("ecu-6", "test", emptyData);
+    
+    EXPECT_EQ(msg->getECUId(), "test");
+    EXPECT_TRUE(msg->getData().empty());
+    EXPECT_FALSE(msg->getValue("any_key").has_value());
+}
+
+// Test ECUDataMessage timestamp
+TEST_F(MessageTypesTest, ECUDataMessageTimestamp) {
+    std::map<std::string, std::string> data = {{"test", "value"}};
+    auto msg = std::make_shared<ECUDataMessage>("ecu-7", "test", data);
+    
+    auto timestamp = msg->getTimestamp();
+    auto now = std::chrono::system_clock::now();
+    auto oneMinute = std::chrono::minutes(1);
+    
+    EXPECT_LT(now - timestamp, oneMinute);
+    EXPECT_GT(timestamp.time_since_epoch().count(), 0);
+}
+
+// Test ECUDataMessage with multiple ECUs
+TEST_F(MessageTypesTest, ECUDataMessageMultipleECUs) {
+    std::map<std::string, std::string> engineData = {{"rpm", "2000"}};
+    std::map<std::string, std::string> transData = {{"gear", "4"}};
+    std::map<std::string, std::string> brakeData = {{"pressure", "30"}};
+    
+    auto engineMsg = std::make_shared<ECUDataMessage>("id-1", "engine", engineData);
+    auto transMsg = std::make_shared<ECUDataMessage>("id-2", "transmission", transData);
+    auto brakeMsg = std::make_shared<ECUDataMessage>("id-3", "brake", brakeData);
+    
+    EXPECT_EQ(engineMsg->getECUId(), "engine");
+    EXPECT_EQ(transMsg->getECUId(), "transmission");
+    EXPECT_EQ(brakeMsg->getECUId(), "brake");
+    
+    EXPECT_EQ(engineMsg->getValue("rpm").value(), "2000");
+    EXPECT_EQ(transMsg->getValue("gear").value(), "4");
+    EXPECT_EQ(brakeMsg->getValue("pressure").value(), "30");
+}
+

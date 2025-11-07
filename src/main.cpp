@@ -7,312 +7,454 @@
 #include "include/ExampleStates.h"
 #include <thread>
 #include <chrono>
-#include <random>
 #include <atomic>
+#include <mutex>
+#include <map>
+#include <vector>
+#include <sstream>
+#include <cstring>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <algorithm>
 
 /**
- * @brief Real-world example: Data Ingestion Service
+ * @brief ECU Gateway - Receives ECU data and exposes REST API
  * 
- * This example demonstrates a data ingestion service that:
- * 1. Starts in Init state (initializing connections, loading config)
- * 2. Transitions to Active state (ready to process incoming data)
- * 3. Processes messages from a queue using worker threads
- * 4. Handles errors gracefully (transitions to Error state)
- * 5. Recovers from errors and continues processing
- * 
- * This combines both the message queue system and state machine
- * to create a realistic, production-like scenario.
+ * This gateway:
+ * 1. Receives ECU data from simulators via TCP socket
+ * 2. Processes and stores ECU data in memory
+ * 3. Exposes REST API endpoints for clients to consume data
  */
 
-// Global state for the service
-std::atomic<int> processedCount{0};
-std::atomic<int> errorCount{0};
-std::atomic<bool> serviceRunning{false};
+// Data storage for ECU data
+using ECUDataMap = std::map<std::string, std::map<std::string, std::string>>;
+
+struct ECUDataStore {
+    std::mutex mutex;
+    ECUDataMap latestData; // ecuId -> {param -> value}
+    std::map<std::string, std::chrono::system_clock::time_point> timestamps; // ecuId -> timestamp
+    std::vector<std::shared_ptr<ECUDataMessage>> history; // Store recent history
+    static constexpr size_t MAX_HISTORY = 1000;
+    
+    void update(const std::string& ecuId, const std::map<std::string, std::string>& data) {
+        std::lock_guard<std::mutex> lock(mutex);
+        latestData[ecuId] = data;
+        timestamps[ecuId] = std::chrono::system_clock::now();
+    }
+    
+    ECUDataMap getAllLatest() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return latestData;
+    }
+    
+    std::map<std::string, std::string> getECUData(const std::string& ecuId) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = latestData.find(ecuId);
+        if (it != latestData.end()) {
+            return it->second;
+        }
+        return {};
+    }
+    
+    std::vector<std::string> getECUIds() {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<std::string> ids;
+        for (const auto& [id, _] : latestData) {
+            ids.push_back(id);
+        }
+        return ids;
+    }
+};
+
+ECUDataStore dataStore;
+
+// Simple JSON parser helper
+std::map<std::string, std::string> parseJSONData(const std::string& jsonStr) {
+    std::map<std::string, std::string> result;
+    // Simple JSON parsing for "key":"value" pairs
+    size_t pos = jsonStr.find("\"data\":{");
+    if (pos == std::string::npos) return result;
+    
+    pos += 8; // Skip "data":{
+    size_t end = jsonStr.rfind("}");
+    if (end == std::string::npos || end <= pos) return result;
+    
+    std::string dataSection = jsonStr.substr(pos, end - pos);
+    
+    // Parse key-value pairs
+    size_t keyStart = 0;
+    while ((keyStart = dataSection.find("\"", keyStart)) != std::string::npos) {
+        size_t keyEnd = dataSection.find("\"", keyStart + 1);
+        if (keyEnd == std::string::npos) break;
+        std::string key = dataSection.substr(keyStart + 1, keyEnd - keyStart - 1);
+        
+        size_t valueStart = dataSection.find("\"", keyEnd + 1);
+        if (valueStart == std::string::npos) break;
+        size_t valueEnd = dataSection.find("\"", valueStart + 1);
+        if (valueEnd == std::string::npos) break;
+        std::string value = dataSection.substr(valueStart + 1, valueEnd - valueStart - 1);
+        
+        result[key] = value;
+        keyStart = valueEnd + 1;
+    }
+    
+    return result;
+}
+
+std::string extractJSONField(const std::string& jsonStr, const std::string& field) {
+    std::string search = "\"" + field + "\":\"";
+    size_t pos = jsonStr.find(search);
+    if (pos == std::string::npos) return "";
+    pos += search.length();
+    size_t end = jsonStr.find("\"", pos);
+    if (end == std::string::npos) return "";
+    return jsonStr.substr(pos, end - pos);
+}
+
+// TCP server for receiving ECU data
+class TCPServer {
+public:
+    TCPServer(int port) : port_(port), running_(false) {}
+    
+    void start() {
+        running_ = true;
+        serverThread_ = std::thread([this]() { this->run(); });
+    }
+    
+    void stop() {
+        running_ = false;
+        if (serverThread_.joinable()) {
+            serverThread_.join();
+        }
+    }
+    
+private:
+    void run() {
+        int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd < 0) {
+            fmt::print(stderr, "Error creating TCP server socket\n");
+            return;
+        }
+        
+        int opt = 1;
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        
+        struct sockaddr_in address;
+        std::memset(&address, 0, sizeof(address));
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = INADDR_ANY;
+        address.sin_port = htons(port_);
+        
+        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+            fmt::print(stderr, "Error binding TCP server socket to port {}\n", port_);
+            close(server_fd);
+            return;
+        }
+        
+        if (listen(server_fd, 10) < 0) {
+            fmt::print(stderr, "Error listening on TCP server socket\n");
+            close(server_fd);
+            return;
+        }
+        
+        fmt::print("✓ TCP server listening on port {} for ECU data\n", port_);
+        
+        while (running_) {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+            
+            if (client_fd < 0) {
+                if (running_) {
+                    fmt::print(stderr, "Error accepting connection\n");
+                }
+                continue;
+            }
+            
+            // Handle client in a separate thread
+            std::thread([this, client_fd]() {
+                this->handleClient(client_fd);
+            }).detach();
+        }
+        
+        close(server_fd);
+    }
+    
+    void handleClient(int client_fd) {
+        char buffer[4096];
+        std::string bufferStr;
+        
+        while (running_) {
+            ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+            if (bytes_read <= 0) {
+                break;
+            }
+            
+            buffer[bytes_read] = '\0';
+            bufferStr += buffer;
+            
+            // Process complete JSON messages (newline-separated)
+            size_t pos = 0;
+            while ((pos = bufferStr.find('\n')) != std::string::npos) {
+                std::string jsonMsg = bufferStr.substr(0, pos);
+                bufferStr = bufferStr.substr(pos + 1);
+                
+                if (!jsonMsg.empty()) {
+                    processECUData(jsonMsg);
+                }
+            }
+        }
+        
+        close(client_fd);
+    }
+    
+    void processECUData(const std::string& jsonStr) {
+        std::string id = extractJSONField(jsonStr, "id");
+        std::string ecuId = extractJSONField(jsonStr, "ecuId");
+        
+        if (ecuId.empty()) {
+            fmt::print(stderr, "[ERROR] Invalid ECU data: missing ecuId\n");
+            return;
+        }
+        
+        std::map<std::string, std::string> data = parseJSONData(jsonStr);
+        
+        // Create ECUDataMessage and enqueue
+        auto msg = std::make_shared<ECUDataMessage>(id, ecuId, data);
+        
+        // Update data store
+        dataStore.update(ecuId, data);
+        
+        fmt::print("[GATEWAY] Received data from {} (ID: {})\n", ecuId, id);
+    }
+    
+    int port_;
+    std::atomic<bool> running_;
+    std::thread serverThread_;
+};
+
+// Simple HTTP/REST server
+class HTTPServer {
+public:
+    HTTPServer(int port) : port_(port), running_(false) {}
+    
+    void start() {
+        running_ = true;
+        serverThread_ = std::thread([this]() { this->run(); });
+    }
+    
+    void stop() {
+        running_ = false;
+        if (serverThread_.joinable()) {
+            serverThread_.join();
+        }
+    }
+    
+private:
+    void run() {
+        int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd < 0) {
+            fmt::print(stderr, "Error creating HTTP server socket\n");
+            return;
+        }
+        
+        int opt = 1;
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        
+        struct sockaddr_in address;
+        std::memset(&address, 0, sizeof(address));
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = INADDR_ANY;
+        address.sin_port = htons(port_);
+        
+        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+            fmt::print(stderr, "Error binding HTTP server socket to port {}\n", port_);
+            close(server_fd);
+            return;
+        }
+        
+        if (listen(server_fd, 10) < 0) {
+            fmt::print(stderr, "Error listening on HTTP server socket\n");
+            close(server_fd);
+            return;
+        }
+        
+        fmt::print("✓ HTTP server listening on port {} for REST API\n", port_);
+        
+        while (running_) {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+            
+            if (client_fd < 0) {
+                if (running_) {
+                    fmt::print(stderr, "Error accepting HTTP connection\n");
+                }
+                continue;
+            }
+            
+            // Handle client
+            handleHTTPClient(client_fd);
+            close(client_fd);
+        }
+        
+        close(server_fd);
+    }
+    
+    void handleHTTPClient(int client_fd) {
+        char buffer[4096];
+        ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_read <= 0) return;
+        
+        buffer[bytes_read] = '\0';
+        std::string request(buffer);
+        
+        // Parse request line
+        size_t firstSpace = request.find(' ');
+        size_t secondSpace = request.find(' ', firstSpace + 1);
+        if (firstSpace == std::string::npos || secondSpace == std::string::npos) {
+            sendError(client_fd, 400, "Bad Request");
+            return;
+        }
+        
+        std::string method = request.substr(0, firstSpace);
+        std::string path = request.substr(firstSpace + 1, secondSpace - firstSpace - 1);
+        
+        if (method == "GET") {
+            handleGET(client_fd, path);
+        } else {
+            sendError(client_fd, 405, "Method Not Allowed");
+        }
+    }
+    
+    void handleGET(int client_fd, const std::string& path) {
+        if (path == "/api/ecus" || path == "/api/ecus/") {
+            // List all ECUs
+            auto allData = dataStore.getAllLatest();
+            std::string json = "{\"ecus\":[";
+            bool first = true;
+            for (const auto& [ecuId, _] : allData) {
+                if (!first) json += ",";
+                json += "\"" + ecuId + "\"";
+                first = false;
+            }
+            json += "]}";
+            sendJSON(client_fd, json);
+        } else if (path.find("/api/ecus/") == 0) {
+            // Get specific ECU data
+            std::string ecuId = path.substr(10); // Skip "/api/ecus/"
+            auto data = dataStore.getECUData(ecuId);
+            if (data.empty()) {
+                sendError(client_fd, 404, "ECU not found");
+            } else {
+                std::string json = "{\"ecuId\":\"" + ecuId + "\",\"data\":{";
+                bool first = true;
+                for (const auto& [key, value] : data) {
+                    if (!first) json += ",";
+                    json += "\"" + key + "\":\"" + value + "\"";
+                    first = false;
+                }
+                json += "}}";
+                sendJSON(client_fd, json);
+            }
+        } else if (path == "/api/data" || path == "/api/data/") {
+            // Get all ECU data
+            auto allData = dataStore.getAllLatest();
+            std::string json = "{";
+            bool firstEcu = true;
+            for (const auto& [ecuId, data] : allData) {
+                if (!firstEcu) json += ",";
+                json += "\"" + ecuId + "\":{";
+                bool firstParam = true;
+                for (const auto& [key, value] : data) {
+                    if (!firstParam) json += ",";
+                    json += "\"" + key + "\":\"" + value + "\"";
+                    firstParam = false;
+                }
+                json += "}";
+                firstEcu = false;
+            }
+            json += "}";
+            sendJSON(client_fd, json);
+        } else if (path == "/" || path == "/health") {
+            sendJSON(client_fd, "{\"status\":\"ok\",\"service\":\"ECU Gateway\"}");
+        } else {
+            sendError(client_fd, 404, "Not Found");
+        }
+    }
+    
+    void sendJSON(int client_fd, const std::string& json) {
+        std::string response = "HTTP/1.1 200 OK\r\n";
+        response += "Content-Type: application/json\r\n";
+        response += "Access-Control-Allow-Origin: *\r\n";
+        response += "Content-Length: " + std::to_string(json.length()) + "\r\n";
+        response += "\r\n";
+        response += json;
+        send(client_fd, response.c_str(), response.length(), 0);
+    }
+    
+    void sendError(int client_fd, int code, const std::string& message) {
+        std::string json = "{\"error\":" + std::to_string(code) + ",\"message\":\"" + message + "\"}";
+        std::string response = "HTTP/1.1 " + std::to_string(code) + " " + message + "\r\n";
+        response += "Content-Type: application/json\r\n";
+        response += "Content-Length: " + std::to_string(json.length()) + "\r\n";
+        response += "\r\n";
+        response += json;
+        send(client_fd, response.c_str(), response.length(), 0);
+    }
+    
+    int port_;
+    std::atomic<bool> running_;
+    std::thread serverThread_;
+};
 
 int main() {
     fmt::print("╔══════════════════════════════════════════════════════════╗\n");
-    fmt::print("║     Data Ingestion Service - Real-World Example         ║\n");
-    fmt::print("║     Combining Message Queue + State Machine             ║\n");
+    fmt::print("║              ECU Data Gateway                            ║\n");
+    fmt::print("║     Receives ECU data and exposes REST API               ║\n");
     fmt::print("╚══════════════════════════════════════════════════════════╝\n\n");
     
-    // ========================================================================
-    // Phase 1: Initialize the System
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 1: System Initialization\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
+    const int TCP_PORT = 8080;  // Port for receiving ECU data
+    const int HTTP_PORT = 8081; // Port for REST API
     
-    // Create message queue and handler
+    // Create message queue and handler for processing
     MessageQueue messageQueue;
-    MessageHandler messageHandler(messageQueue, 3); // 3 worker threads
+    MessageHandler messageHandler(messageQueue, 2);
     
-    // Create state machine
-    StateMachine stateMachine;
+    // Create TCP server for receiving ECU data
+    TCPServer tcpServer(TCP_PORT);
+    tcpServer.start();
     
-    // Add states
-    stateMachine.addState("init", std::make_shared<InitState>());
-    stateMachine.addState("active", std::make_shared<ActiveState>());
-    stateMachine.addState("error", std::make_shared<ErrorState>());
+    // Create HTTP server for REST API
+    HTTPServer httpServer(HTTP_PORT);
+    httpServer.start();
     
-    // Define state transitions
-    stateMachine.addTransition("init", "init_complete", "active");
-    stateMachine.addTransition("active", "error_occurred", "error");
-    stateMachine.addTransition("error", "recover", "init");
-    stateMachine.addTransition("error", "recover_to_active", "active");
+    fmt::print("\n✓ Gateway started successfully\n");
+    fmt::print("  • TCP server: localhost:{}\n", TCP_PORT);
+    fmt::print("  • REST API: http://localhost:{}\n", HTTP_PORT);
+    fmt::print("\nREST API Endpoints:\n");
+    fmt::print("  GET /api/ecus          - List all ECU IDs\n");
+    fmt::print("  GET /api/ecus/{{ecuId}}  - Get data for specific ECU\n");
+    fmt::print("  GET /api/data           - Get all ECU data\n");
+    fmt::print("  GET /health            - Health check\n");
+    fmt::print("\nPress Ctrl+C to stop...\n\n");
     
-    // Set transition callback
-    stateMachine.setTransitionCallback([](const std::string& from, const std::string& to, const std::string&) {
-        fmt::print("\n[STATE MACHINE] Transition: {} → {}\n", from, to);
-    });
+    // Keep running
+    std::atomic<bool> running{true};
     
-    // Start in Init state
-    stateMachine.setInitialState("init");
-    stateMachine.start();
-    
-    fmt::print("✓ State machine initialized in '{}' state\n", stateMachine.getCurrentState());
-    fmt::print("✓ Message queue created\n");
-    fmt::print("✓ Message handler created (3 worker threads)\n\n");
-    
-    // ========================================================================
-    // Phase 2: Initialize System Components
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 2: Component Initialization\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    fmt::print("Initializing components...\n");
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    fmt::print("  • Database connection pool: OK\n");
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    fmt::print("  • Configuration loaded: OK\n");
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    fmt::print("  • Message queue ready: OK\n");
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    fmt::print("  • Worker threads ready: OK\n\n");
-    
-    // Transition to Active state
-    fmt::print("Completing initialization...\n");
-    stateMachine.triggerEvent("init_complete", std::string("All systems ready"));
-    fmt::print("✓ System is now in '{}' state\n\n", stateMachine.getCurrentState());
-    
-    // ========================================================================
-    // Phase 3: Start Processing Messages
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 3: Start Message Processing\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    // Set up custom message processor that integrates with state machine
-    messageHandler.setMessageProcessor([&stateMachine](MessagePtr msg) {
-        if (!msg) return;
-        
-        // Process the message
-        auto msgType = msg->getType();
-        auto msgId = msg->getId();
-        
-        fmt::print("[WORKER] Processing {} (ID: {})\n", msgType, msgId);
-        
-        // Simulate processing time
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        
-        // Check for errors in certain messages
-        if (auto eventMsg = std::dynamic_pointer_cast<EventMessage>(msg)) {
-            if (eventMsg->getEventType() == EventMessage::EventType::ERROR) {
-                errorCount++;
-                fmt::print("[WORKER] ⚠ Error detected in message: {}\n", 
-                          eventMsg->getDescription());
-                
-                // Trigger error state if we're in active state
-                if (stateMachine.getCurrentState() == "active") {
-                    fmt::print("[WORKER] Triggering error state transition...\n");
-                    stateMachine.triggerEvent("error_occurred", 
-                                             eventMsg->getDescription());
-                }
-            }
-        } else if (auto dataMsg = std::dynamic_pointer_cast<DataMessage>(msg)) {
-            // Simulate data processing
-            processedCount++;
-            fmt::print("[WORKER] ✓ Processed data: {}\n", dataMsg->getData());
-        }
-    });
-    
-    // Start the message handler
-    messageHandler.start();
-    serviceRunning = true;
-    fmt::print("✓ Message handler started\n");
-    fmt::print("✓ Service is now processing messages\n\n");
-    
-    // ========================================================================
-    // Phase 4: Simulate Data Ingestion
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 4: Ingesting Data\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    // Simulate incoming data from external sources
-    fmt::print("Simulating data ingestion from external sources...\n\n");
-    
-    // Batch 1: Normal data
-    fmt::print("Batch 1: Normal data ingestion\n");
-    for (int i = 1; i <= 5; ++i) {
-        auto msg = std::make_shared<DataMessage>(
-            fmt::format("data-{:03d}", i),
-            fmt::format("Sensor reading #{}: temperature=22.5°C, humidity=65%", i)
-        );
-        messageQueue.enqueue(msg);
-        fmt::print("  [INGEST] Enqueued: {}\n", msg->getId());
+    // Handle shutdown gracefully
+    while (running.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    
-    // Batch 2: Mix of data and events
-    fmt::print("\nBatch 2: Mixed data and events\n");
-    for (int i = 6; i <= 8; ++i) {
-        auto msg = std::make_shared<DataMessage>(
-            fmt::format("data-{:03d}", i),
-            fmt::format("Sensor reading #{}: pressure=1013.25 hPa", i)
-        );
-        messageQueue.enqueue(msg);
-        fmt::print("  [INGEST] Enqueued: {}\n", msg->getId());
-    }
-    
-    // Add an info event
-    auto infoEvent = std::make_shared<EventMessage>(
-        "event-info-1",
-        EventMessage::EventType::INFO,
-        "Batch processing started"
-    );
-    messageQueue.enqueue(infoEvent);
-    fmt::print("  [INGEST] Enqueued: {}\n", infoEvent->getId());
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(600));
-    
-    // Batch 3: Error scenario
-    fmt::print("\nBatch 3: Error scenario\n");
-    for (int i = 9; i <= 10; ++i) {
-        auto msg = std::make_shared<DataMessage>(
-            fmt::format("data-{:03d}", i),
-            fmt::format("Sensor reading #{}: voltage=3.3V", i)
-        );
-        messageQueue.enqueue(msg);
-        fmt::print("  [INGEST] Enqueued: {}\n", msg->getId());
-    }
-    
-    // Add an error event that will trigger state transition
-    auto errorEvent = std::make_shared<EventMessage>(
-        "event-error-1",
-        EventMessage::EventType::ERROR,
-        "Database connection lost - retrying..."
-    );
-    messageQueue.enqueue(errorEvent);
-    fmt::print("  [INGEST] Enqueued: {} (ERROR)\n", errorEvent->getId());
-    
-    // Wait for error to be processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(800));
-    
-    fmt::print("\nCurrent system state: {}\n", stateMachine.getCurrentState());
-    fmt::print("Messages processed: {}\n", processedCount.load());
-    fmt::print("Errors encountered: {}\n\n", errorCount.load());
-    
-    // ========================================================================
-    // Phase 5: Error Recovery
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 5: Error Recovery\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    if (stateMachine.getCurrentState() == "error") {
-        fmt::print("System is in error state. Attempting recovery...\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        
-        fmt::print("  • Reconnecting to database...\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        fmt::print("  • Verifying connections...\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        fmt::print("  • Recovery successful!\n\n");
-        
-        // Recover directly to active state
-        stateMachine.triggerEvent("recover_to_active", 
-                                 std::string("Database reconnected"));
-        fmt::print("✓ System recovered and returned to '{}' state\n\n", 
-                  stateMachine.getCurrentState());
-    }
-    
-    // ========================================================================
-    // Phase 6: Continue Processing
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 6: Continue Processing\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    fmt::print("Continuing to process remaining messages...\n\n");
-    
-    // Add more data after recovery
-    for (int i = 11; i <= 15; ++i) {
-        auto msg = std::make_shared<DataMessage>(
-            fmt::format("data-{:03d}", i),
-            fmt::format("Sensor reading #{}: timestamp={}", i, 
-                       std::chrono::duration_cast<std::chrono::seconds>(
-                           std::chrono::system_clock::now().time_since_epoch()).count())
-        );
-        messageQueue.enqueue(msg);
-    }
-    
-    // Wait for all messages to be processed
-    fmt::print("Waiting for queue to empty...\n");
-    int waitCount = 0;
-    while (!messageQueue.empty() && waitCount < 50) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        waitCount++;
-    }
-    
-    // ========================================================================
-    // Phase 7: System Summary
-    // ========================================================================
-    fmt::print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 7: System Summary\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    fmt::print("Final Statistics:\n");
-    fmt::print("  • Current State: {}\n", stateMachine.getCurrentState());
-    fmt::print("  • Messages Processed: {}\n", processedCount.load());
-    fmt::print("  • Errors Encountered: {}\n", errorCount.load());
-    fmt::print("  • Queue Size: {}\n", messageQueue.size());
-    fmt::print("  • Service Running: {}\n\n", serviceRunning.load() ? "Yes" : "No");
-    
-    // Show state history
-    auto history = stateMachine.getStateHistory();
-    fmt::print("State History:\n");
-    fmt::print("  ");
-    for (size_t i = 0; i < history.size(); ++i) {
-        fmt::print("{}", history[i]);
-        if (i < history.size() - 1) {
-            fmt::print(" → ");
-        }
-    }
-    fmt::print("\n\n");
-    
-    // ========================================================================
-    // Phase 8: Shutdown
-    // ========================================================================
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    fmt::print("PHASE 8: Graceful Shutdown\n");
-    fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    
-    fmt::print("Shutting down service...\n");
-    serviceRunning = false;
-    
-    // Stop message handler
+    fmt::print("\nShutting down gateway...\n");
+    httpServer.stop();
+    tcpServer.stop();
     messageHandler.stop();
-    fmt::print("✓ Message handler stopped\n");
     
-    // Stop state machine
-    stateMachine.stop();
-    fmt::print("✓ State machine stopped\n");
-    
-    fmt::print("\n╔══════════════════════════════════════════════════════════╗\n");
-    fmt::print("║           Service Shutdown Complete                      ║\n");
-    fmt::print("╚══════════════════════════════════════════════════════════╝\n");
+    fmt::print("✓ Gateway stopped\n");
     
     return 0;
 }

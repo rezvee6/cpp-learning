@@ -37,8 +37,13 @@ add_executable(test_message_types
     ${TEST_SOURCES}
 )
 
+add_executable(test_gateway
+    test_gateway.cpp
+    ${TEST_SOURCES}
+)
+
 # Link all test executables
-foreach(test_target test_message_queue test_message_handler test_state_machine test_integration test_message_types)
+foreach(test_target test_message_queue test_message_handler test_state_machine test_integration test_message_types test_gateway)
     target_include_directories(${test_target} PRIVATE 
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/include
@@ -70,6 +75,7 @@ set_tests_properties(
     test_state_machine
     test_integration
     test_message_types
+    test_gateway
     PROPERTIES
     TIMEOUT 60
 )

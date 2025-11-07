@@ -13,6 +13,8 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <map>
+#include <optional>
 
 /**
  * @brief Example message type for data ingestion
@@ -174,6 +176,109 @@ private:
     std::string id_;
     EventType type_;
     std::string description_;
+    std::chrono::system_clock::time_point timestamp_;
+};
+
+/**
+ * @brief Message type for vehicle ECU data
+ * 
+ * This message type is designed for vehicle Electronic Control Unit (ECU) data,
+ * containing structured information from various ECUs in a vehicle.
+ * 
+ * @example
+ * @code
+ * auto ecuMsg = std::make_shared<ECUDataMessage>(
+ *     "ecu-1",
+ *     "engine",
+ *     {{"rpm", "2500"}, {"temperature", "85"}, {"pressure", "1.2"}}
+ * );
+ * queue.enqueue(ecuMsg);
+ * @endcode
+ * 
+ * @see Message
+ * @see DataMessage
+ */
+class ECUDataMessage : public Message {
+public:
+    /**
+     * @brief Constructor
+     * @param id Unique identifier for this message
+     * @param ecuId Identifier of the ECU (e.g., "engine", "transmission", "brakes")
+     * @param data Key-value pairs of sensor/parameter data
+     */
+    ECUDataMessage(const std::string& id, const std::string& ecuId, 
+                   const std::map<std::string, std::string>& data)
+        : id_(id), ecuId_(ecuId), data_(data), 
+          timestamp_(std::chrono::system_clock::now()) {}
+    
+    std::string getType() const override {
+        return "ECUDataMessage";
+    }
+    
+    std::string getId() const override {
+        return id_;
+    }
+    
+    std::chrono::system_clock::time_point getTimestamp() const override {
+        return timestamp_;
+    }
+    
+    void process() override {
+        // Process ECU data message
+        // This is where you would implement ECU-specific processing logic
+    }
+    
+    std::string toString() const override {
+        auto time_t = std::chrono::system_clock::to_time_t(timestamp_);
+        std::stringstream ss;
+        ss << "[ECUDataMessage] ID: " << id_ 
+           << ", ECU: " << ecuId_
+           << ", Data: {";
+        
+        bool first = true;
+        for (const auto& [key, value] : data_) {
+            if (!first) ss << ", ";
+            ss << key << "=" << value;
+            first = false;
+        }
+        ss << "}"
+           << ", Timestamp: " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+        return ss.str();
+    }
+    
+    /**
+     * @brief Get the ECU identifier
+     * @return ECU ID string
+     */
+    const std::string& getECUId() const {
+        return ecuId_;
+    }
+    
+    /**
+     * @brief Get the data map
+     * @return Reference to the data map
+     */
+    const std::map<std::string, std::string>& getData() const {
+        return data_;
+    }
+    
+    /**
+     * @brief Get a specific data value by key
+     * @param key The parameter key
+     * @return Optional value if key exists
+     */
+    std::optional<std::string> getValue(const std::string& key) const {
+        auto it = data_.find(key);
+        if (it != data_.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
+private:
+    std::string id_;
+    std::string ecuId_;
+    std::map<std::string, std::string> data_;
     std::chrono::system_clock::time_point timestamp_;
 };
 
