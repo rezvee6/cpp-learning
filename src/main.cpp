@@ -70,34 +70,109 @@ struct ECUDataStore {
 
 ECUDataStore dataStore;
 
-// Simple JSON parser helper
+// Simple JSON parser helper - handles nested structure
 std::map<std::string, std::string> parseJSONData(const std::string& jsonStr) {
     std::map<std::string, std::string> result;
-    // Simple JSON parsing for "key":"value" pairs
+    // Find the data section
     size_t pos = jsonStr.find("\"data\":{");
     if (pos == std::string::npos) return result;
     
     pos += 8; // Skip "data":{
-    size_t end = jsonStr.rfind("}");
-    if (end == std::string::npos || end <= pos) return result;
+    
+    // Find matching closing brace (handle nested braces)
+    int braceCount = 1;
+    size_t end = pos;
+    while (end < jsonStr.length() && braceCount > 0) {
+        if (jsonStr[end] == '{') braceCount++;
+        else if (jsonStr[end] == '}') braceCount--;
+        end++;
+    }
+    if (braceCount != 0) return result;
+    end--; // Back up to the closing brace
     
     std::string dataSection = jsonStr.substr(pos, end - pos);
     
-    // Parse key-value pairs
-    size_t keyStart = 0;
-    while ((keyStart = dataSection.find("\"", keyStart)) != std::string::npos) {
-        size_t keyEnd = dataSection.find("\"", keyStart + 1);
-        if (keyEnd == std::string::npos) break;
-        std::string key = dataSection.substr(keyStart + 1, keyEnd - keyStart - 1);
+    // Parse nested structure: "ParameterName":{"value":X,"unit":"Y","status":"Z","timestamp":"T"}
+    size_t paramStart = 0;
+    while ((paramStart = dataSection.find("\"", paramStart)) != std::string::npos) {
+        size_t paramEnd = dataSection.find("\"", paramStart + 1);
+        if (paramEnd == std::string::npos) break;
+        std::string paramName = dataSection.substr(paramStart + 1, paramEnd - paramStart - 1);
         
-        size_t valueStart = dataSection.find("\"", keyEnd + 1);
-        if (valueStart == std::string::npos) break;
-        size_t valueEnd = dataSection.find("\"", valueStart + 1);
-        if (valueEnd == std::string::npos) break;
-        std::string value = dataSection.substr(valueStart + 1, valueEnd - valueStart - 1);
+        // Find the value field
+        size_t valuePos = dataSection.find("\"value\":", paramEnd);
+        if (valuePos == std::string::npos) {
+            paramStart = paramEnd + 1;
+            continue;
+        }
         
-        result[key] = value;
-        keyStart = valueEnd + 1;
+        valuePos += 8; // Skip "value":
+        // Skip whitespace
+        while (valuePos < dataSection.length() && (dataSection[valuePos] == ' ' || dataSection[valuePos] == '\t')) {
+            valuePos++;
+        }
+        
+        std::string value;
+        if (valuePos < dataSection.length() && dataSection[valuePos] == '"') {
+            // String value
+            valuePos++;
+            size_t valueEnd = dataSection.find("\"", valuePos);
+            if (valueEnd != std::string::npos) {
+                value = dataSection.substr(valuePos, valueEnd - valuePos);
+            }
+        } else {
+            // Numeric value
+            size_t valueEnd = valuePos;
+            while (valueEnd < dataSection.length() && 
+                   (std::isdigit(dataSection[valueEnd]) || dataSection[valueEnd] == '.' || 
+                    dataSection[valueEnd] == '-' || dataSection[valueEnd] == 'e' || 
+                    dataSection[valueEnd] == 'E' || dataSection[valueEnd] == '+')) {
+                valueEnd++;
+            }
+            if (valueEnd > valuePos) {
+                value = dataSection.substr(valuePos, valueEnd - valuePos);
+            }
+        }
+        
+        // Store flattened: paramName.value, paramName.unit, paramName.status, paramName.timestamp
+        if (!value.empty()) {
+            result[paramName + ".value"] = value;
+        }
+        
+        // Extract unit
+        size_t unitPos = dataSection.find("\"unit\":\"", paramEnd);
+        if (unitPos != std::string::npos) {
+            unitPos += 8;
+            size_t unitEnd = dataSection.find("\"", unitPos);
+            if (unitEnd != std::string::npos) {
+                result[paramName + ".unit"] = dataSection.substr(unitPos, unitEnd - unitPos);
+            }
+        }
+        
+        // Extract status
+        size_t statusPos = dataSection.find("\"status\":\"", paramEnd);
+        if (statusPos != std::string::npos) {
+            statusPos += 10;
+            size_t statusEnd = dataSection.find("\"", statusPos);
+            if (statusEnd != std::string::npos) {
+                result[paramName + ".status"] = dataSection.substr(statusPos, statusEnd - statusPos);
+            }
+        }
+        
+        // Extract timestamp
+        size_t tsPos = dataSection.find("\"timestamp\":\"", paramEnd);
+        if (tsPos != std::string::npos) {
+            tsPos += 13;
+            size_t tsEnd = dataSection.find("\"", tsPos);
+            if (tsEnd != std::string::npos) {
+                result[paramName + ".timestamp"] = dataSection.substr(tsPos, tsEnd - tsPos);
+            }
+        }
+        
+        // Move to next parameter (find next parameter start)
+        size_t nextParam = dataSection.find("\"", paramEnd + 1);
+        if (nextParam == std::string::npos) break;
+        paramStart = nextParam;
     }
     
     return result;
@@ -349,11 +424,35 @@ private:
             if (data.empty()) {
                 sendError(client_fd, 404, "ECU not found");
             } else {
+                // Reconstruct nested structure from flattened data
+                std::map<std::string, std::map<std::string, std::string>> nestedData;
+                for (const auto& [key, value] : data) {
+                    size_t dotPos = key.find('.');
+                    if (dotPos != std::string::npos) {
+                        std::string paramName = key.substr(0, dotPos);
+                        std::string field = key.substr(dotPos + 1);
+                        nestedData[paramName][field] = value;
+                    }
+                }
+                
                 std::string json = "{\"ecuId\":\"" + ecuId + "\",\"data\":{";
                 bool first = true;
-                for (const auto& [key, value] : data) {
+                for (const auto& [paramName, fields] : nestedData) {
                     if (!first) json += ",";
-                    json += "\"" + key + "\":\"" + value + "\"";
+                    json += "\"" + paramName + "\":{";
+                    bool firstField = true;
+                    for (const auto& [field, val] : fields) {
+                        if (!firstField) json += ",";
+                        // Check if value is numeric (doesn't start with quote)
+                        bool isNumeric = !val.empty() && (std::isdigit(val[0]) || val[0] == '-' || val[0] == '.');
+                        if (isNumeric) {
+                            json += "\"" + field + "\":" + val;
+                        } else {
+                            json += "\"" + field + "\":\"" + val + "\"";
+                        }
+                        firstField = false;
+                    }
+                    json += "}";
                     first = false;
                 }
                 json += "}}";
@@ -366,11 +465,35 @@ private:
             bool firstEcu = true;
             for (const auto& [ecuId, data] : allData) {
                 if (!firstEcu) json += ",";
+                
+                // Reconstruct nested structure from flattened data
+                std::map<std::string, std::map<std::string, std::string>> nestedData;
+                for (const auto& [key, value] : data) {
+                    size_t dotPos = key.find('.');
+                    if (dotPos != std::string::npos) {
+                        std::string paramName = key.substr(0, dotPos);
+                        std::string field = key.substr(dotPos + 1);
+                        nestedData[paramName][field] = value;
+                    }
+                }
+                
                 json += "\"" + ecuId + "\":{";
                 bool firstParam = true;
-                for (const auto& [key, value] : data) {
+                for (const auto& [paramName, fields] : nestedData) {
                     if (!firstParam) json += ",";
-                    json += "\"" + key + "\":\"" + value + "\"";
+                    json += "\"" + paramName + "\":{";
+                    bool firstField = true;
+                    for (const auto& [field, val] : fields) {
+                        if (!firstField) json += ",";
+                        bool isNumeric = !val.empty() && (std::isdigit(val[0]) || val[0] == '-' || val[0] == '.');
+                        if (isNumeric) {
+                            json += "\"" + field + "\":" + val;
+                        } else {
+                            json += "\"" + field + "\":\"" + val + "\"";
+                        }
+                        firstField = false;
+                    }
+                    json += "}";
                     firstParam = false;
                 }
                 json += "}";

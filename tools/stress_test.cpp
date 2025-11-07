@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <sstream>
 #include <mutex>
+#include <iomanip>
+#include <ctime>
 
 /**
  * @brief Stress Test Tool for ECU Gateway
@@ -95,10 +97,10 @@ public:
             "/health",
             "/api/ecus",
             "/api/data",
-            "/api/ecus/engine",
-            "/api/ecus/transmission",
-            "/api/ecus/brake",
-            "/api/ecus/battery"
+            "/api/ecus/PCM-PowertrainControlModule",
+            "/api/ecus/TCM-TransmissionControlModule",
+            "/api/ecus/BCM-BrakeControlModule",
+            "/api/ecus/BMS-BatteryManagementSystem"
         };
 
         while (true) {
@@ -167,13 +169,22 @@ public:
                 std::uniform_real_distribution<double> valueDist(0, 100);
 
                 for (int j = 0; j < messagesPerConnection; ++j) {
-                    std::string ecuId = (j % 4 == 0) ? "engine" : 
-                                       (j % 4 == 1) ? "transmission" :
-                                       (j % 4 == 2) ? "brake" : "battery";
+                    std::string ecuId = (j % 4 == 0) ? "PCM-PowertrainControlModule" : 
+                                       (j % 4 == 1) ? "TCM-TransmissionControlModule" :
+                                       (j % 4 == 2) ? "BCM-BrakeControlModule" : "BMS-BatteryManagementSystem";
+                    
+                    auto now = std::chrono::system_clock::now();
+                    auto time_t = std::chrono::system_clock::to_time_t(now);
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now.time_since_epoch()) % 1000;
+                    std::stringstream ss;
+                    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%S");
+                    ss << "." << std::setfill('0') << std::setw(3) << ms.count() << "Z";
+                    std::string timestamp = ss.str();
                     
                     std::string json = fmt::format(
-                        R"({{"id":"stress-{:06d}-{:06d}","ecuId":"{}","data":{{"value":"{:.2f}"}}}})",
-                        i, j, ecuId, valueDist(rng)
+                        R"({{"id":"STRESS-{:06d}-{:06d}","ecuId":"{}","timestamp":"{}","data":{{"TestValue":{{"value":{:.2f},"unit":"-","status":"OK","timestamp":"{}"}}}}}})",
+                        i, j, ecuId, timestamp, valueDist(rng), timestamp
                     );
                     
                     std::string data = json + "\n";

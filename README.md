@@ -2,6 +2,13 @@
 
 A comprehensive C++ library combining a thread-safe message queue system with an event-driven state machine for building robust, production-ready applications.
 
+## Documentation
+
+- **[README.md](README.md)** - Overview, architecture, and API reference (this file)
+- **[INTEGRATION.md](INTEGRATION.md)** - Integration examples, patterns, and real-world usage
+- **[TESTING.md](TESTING.md)** - Testing guide and stress testing instructions
+- **[PLANNING.md](PLANNING.md)** - Future goals and roadmap
+
 ## Overview
 
 This library provides two integrated systems:
@@ -81,76 +88,44 @@ The systems can work independently or together. The example in `main.cpp` demons
 
 ## Quick Start
 
-### Message Queue Usage
+For detailed examples and integration patterns, see [INTEGRATION.md](INTEGRATION.md).
+
+### Basic Usage
 
 ```cpp
 #include "include/MessageQueue.h"
 #include "include/MessageHandler.h"
 #include "include/MessageTypes.h"
 
-// Create queue and handler
+// Create and start message queue system
 MessageQueue queue;
-MessageHandler handler(queue, 2); // 2 worker threads
-
-// Start processing
+MessageHandler handler(queue, 2);
 handler.start();
 
 // Enqueue messages
 auto msg = std::make_shared<DataMessage>("id-1", "Hello, World!");
 queue.enqueue(msg);
 
-// ... process more messages ...
-
-// Stop processing
+// Stop when done
 handler.stop();
 ```
 
-### State Machine Usage
+### State Machine
 
 ```cpp
 #include "include/StateMachine.h"
 #include "include/ExampleStates.h"
 
-// Create state machine
 StateMachine sm;
-
-// Add states
 sm.addState("init", std::make_shared<InitState>());
 sm.addState("active", std::make_shared<ActiveState>());
-sm.addState("error", std::make_shared<ErrorState>());
-
-// Define transitions
 sm.addTransition("init", "init_complete", "active");
-sm.addTransition("active", "error_occurred", "error");
-sm.addTransition("error", "recover", "init");
-
-// Start state machine
 sm.setInitialState("init");
 sm.start();
-
-// Trigger events to change states
 sm.triggerEvent("init_complete");  // init → active
-sm.triggerEvent("error_occurred", std::string("Error message"));  // active → error
-sm.triggerEvent("recover");  // error → init
-
-// Stop state machine
-sm.stop();
 ```
 
-### Integrated Example
-
-The `main.cpp` file includes a complete **Data Ingestion Service** example that demonstrates:
-
-- System initialization with state machine (Init → Active)
-- Message processing with worker threads
-- Error handling and recovery (Active → Error → Active)
-- Integration between message queue and state machine
-
-Run the example:
-
-```bash
-./build.sh run
-```
+See [INTEGRATION.md](INTEGRATION.md) for comprehensive examples and patterns.
 
 ## Building
 
@@ -441,117 +416,42 @@ public:
 };
 ```
 
-## Integration Example
+## Integration
 
-Here's how to integrate both systems:
+The systems can work independently or together. See [INTEGRATION.md](INTEGRATION.md) for:
 
-```cpp
-// Create both systems
-MessageQueue queue;
-MessageHandler handler(queue, 3);
-StateMachine sm;
-
-// Setup state machine
-sm.addState("init", std::make_shared<InitState>());
-sm.addState("active", std::make_shared<ActiveState>());
-sm.addState("error", std::make_shared<ErrorState>());
-sm.addTransition("init", "init_complete", "active");
-sm.addTransition("active", "error_occurred", "error");
-sm.addTransition("error", "recover", "active");
-
-// Integrate: message processor can trigger state transitions
-handler.setMessageProcessor([&sm](MessagePtr msg) {
-    if (auto eventMsg = std::dynamic_pointer_cast<EventMessage>(msg)) {
-        if (eventMsg->getEventType() == EventMessage::EventType::ERROR) {
-            sm.triggerEvent("error_occurred", eventMsg->getDescription());
-        }
-    }
-    msg->process();
-});
-
-// Start both systems
-sm.setInitialState("init");
-sm.start();
-handler.start();
-
-// Use both systems...
-```
+- Integration patterns and examples
+- Real-world usage scenarios
+- Advanced patterns and best practices
+- Complete ECU Gateway example walkthrough
 
 ## ECU Gateway Application
 
-The project includes a complete **ECU Data Gateway** application that demonstrates the message queue system in a real-world scenario.
+The project includes a complete **ECU Data Gateway** application demonstrating real-world usage.
 
-### Overview
-
-The ECU Gateway:
-
-- Receives vehicle ECU data from simulators via TCP socket (port 8080)
-- Processes and stores ECU data in memory
-- Exposes a REST API (port 8081) for clients to consume ECU data
-
-### Building and Running
-
-1. **Build the project:**
-
-   ```bash
-   ./build.sh run
-   ```
-
-2. **Start the gateway:**
-
-   ```bash
-   cd build
-   ./src/cpp-messgage-queue
-   ```
-
-3. **Start the ECU simulator** (in another terminal):
-
-   ```bash
-   cd build
-   ./tools/ecu_simulator
-   ```
-
-   Or with custom parameters:
-
-   ```bash
-   ./tools/ecu_simulator [host] [port] [duration_seconds] [interval_ms]
-   ```
-
-### REST API Endpoints
-
-- `GET /health` - Health check
-- `GET /api/ecus` - List all ECU IDs
-- `GET /api/ecus/{ecuId}` - Get data for specific ECU (e.g., `engine`, `transmission`, `brake`, `battery`)
-- `GET /api/data` - Get all ECU data
-
-### Example Usage
+**Quick Start:**
 
 ```bash
-# Health check
-curl http://localhost:8081/health
+# Terminal 1: Start gateway
+cd build && ./src/cpp-messgage-queue
 
-# List all ECUs
-curl http://localhost:8081/api/ecus
+# Terminal 2: Start simulator
+cd build && ./tools/ecu_simulator
 
-# Get engine data
-curl http://localhost:8081/api/ecus/engine
-
-# Get all ECU data
+# Terminal 3: Query API
 curl http://localhost:8081/api/data
 ```
 
-### ECU Simulator
+**Features:**
 
-The `tools/ecu_simulator` generates realistic test data from 4 vehicle ECUs:
+- Receives ECU data via TCP (port 8080)
+- REST API for data consumption (port 8081)
+- Realistic vehicle ECU data with proper units, status, and timestamps
 
-- **Engine**: RPM, temperature, pressure, throttle position
-- **Transmission**: Gear, speed, temperature
-- **Brake**: Brake pressure, ABS status
-- **Battery**: Voltage, current, temperature, state of charge
+**ECUs:** PCM-PowertrainControlModule, TCM-TransmissionControlModule, BCM-BrakeControlModule, BMS-BatteryManagementSystem
 
-### Testing
-
-See [TESTING.md](TESTING.md) for detailed testing instructions and examples.
+For complete walkthrough, architecture details, and usage examples, see [INTEGRATION.md](INTEGRATION.md).  
+For testing instructions, see [TESTING.md](TESTING.md).
 
 ## Thread Safety
 

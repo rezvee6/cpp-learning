@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <sstream>
 #include <vector>
+#include <iomanip>
+#include <ctime>
 
 /**
  * @brief ECU Simulator - Generates test ECU data for vehicle systems
@@ -76,65 +78,133 @@ public:
         return sent > 0;
     }
 
+    std::string getISOTimestamp() {
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()) % 1000;
+        
+        std::stringstream ss;
+        ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%S");
+        ss << "." << std::setfill('0') << std::setw(3) << ms.count() << "Z";
+        return ss.str();
+    }
+
+    std::string getStatus(double value, double min, double max, double warnMin, double warnMax) {
+        if (value < min || value > max) return "ERROR";
+        if (value < warnMin || value > warnMax) return "WARNING";
+        return "OK";
+    }
+
     std::string generateEngineData(int sequence) {
         std::uniform_real_distribution<double> rpmDist(800, 6000);
-        std::uniform_real_distribution<double> tempDist(75, 105);
-        std::uniform_real_distribution<double> pressureDist(0.8, 1.5);
+        std::uniform_real_distribution<double> coolantTempDist(75, 105);
+        std::uniform_real_distribution<double> intakePressureDist(30, 150); // kPa
         std::uniform_real_distribution<double> throttleDist(0, 100);
+        std::uniform_real_distribution<double> oilTempDist(80, 120);
+        std::uniform_real_distribution<double> fuelLevelDist(10, 100);
 
         int rpm = static_cast<int>(rpmDist(engine_rng_));
-        double temp = tempDist(engine_rng_);
-        double pressure = pressureDist(engine_rng_);
+        double coolantTemp = coolantTempDist(engine_rng_);
+        double intakePressure = intakePressureDist(engine_rng_);
         double throttle = throttleDist(engine_rng_);
+        double oilTemp = oilTempDist(engine_rng_);
+        double fuelLevel = fuelLevelDist(engine_rng_);
+
+        std::string timestamp = getISOTimestamp();
+        std::string rpmStatus = getStatus(rpm, 0, 6500, 100, 6000);
+        std::string coolantStatus = getStatus(coolantTemp, 60, 110, 80, 100);
+        std::string throttleStatus = "OK";
 
         return fmt::format(
-            R"({{"id":"engine-{:06d}","ecuId":"engine","data":{{"rpm":"{}","temperature":"{:.1f}","pressure":"{:.2f}","throttle_position":"{:.1f}"}}}})",
-            sequence, rpm, temp, pressure, throttle
+            R"({{"id":"PCM-ENG-{:06d}","ecuId":"PCM-PowertrainControlModule","timestamp":"{}","data":{{"EngineSpeed_RPM":{{"value":{},"unit":"RPM","status":"{}","timestamp":"{}"}},"CoolantTemperature_C":{{"value":{:.1f},"unit":"C","status":"{}","timestamp":"{}"}},"IntakeManifoldPressure_kPa":{{"value":{:.1f},"unit":"kPa","status":"OK","timestamp":"{}"}},"ThrottlePosition_Percent":{{"value":{:.1f},"unit":"%","status":"OK","timestamp":"{}"}},"EngineOilTemperature_C":{{"value":{:.1f},"unit":"C","status":"OK","timestamp":"{}"}},"FuelLevel_Percent":{{"value":{:.1f},"unit":"%","status":"OK","timestamp":"{}"}}}}}})",
+            sequence, timestamp, rpm, rpmStatus, timestamp, 
+            coolantTemp, coolantStatus, timestamp,
+            intakePressure, timestamp,
+            throttle, timestamp,
+            oilTemp, timestamp,
+            fuelLevel, timestamp
         );
     }
 
     std::string generateTransmissionData(int sequence) {
-        std::uniform_int_distribution<int> gearDist(0, 6);
-        std::uniform_real_distribution<double> speedDist(0, 120);
-        std::uniform_real_distribution<double> tempDist(60, 90);
+        std::uniform_int_distribution<int> gearDist(0, 8);
+        std::uniform_real_distribution<double> speedDist(0, 150);
+        std::uniform_real_distribution<double> tempDist(60, 95);
+        std::uniform_real_distribution<double> torqueDist(50, 400);
 
         int gear = gearDist(transmission_rng_);
         double speed = speedDist(transmission_rng_);
         double temp = tempDist(transmission_rng_);
+        double torque = torqueDist(transmission_rng_);
+
+        std::string timestamp = getISOTimestamp();
+        std::string tempStatus = getStatus(temp, 50, 100, 70, 90);
+        std::string gearStatus = (gear == 0) ? "NEUTRAL" : "OK";
 
         return fmt::format(
-            R"({{"id":"transmission-{:06d}","ecuId":"transmission","data":{{"gear":"{}","speed":"{:.1f}","temperature":"{:.1f}"}}}})",
-            sequence, gear, speed, temp
+            R"({{"id":"TCM-TRX-{:06d}","ecuId":"TCM-TransmissionControlModule","timestamp":"{}","data":{{"CurrentGear":{{"value":{},"unit":"-","status":"{}","timestamp":"{}"}},"VehicleSpeed_kmh":{{"value":{:.1f},"unit":"km/h","status":"OK","timestamp":"{}"}},"TransmissionFluidTemp_C":{{"value":{:.1f},"unit":"C","status":"{}","timestamp":"{}"}},"TransmissionTorque_Nm":{{"value":{:.1f},"unit":"Nm","status":"OK","timestamp":"{}"}},"GearPosition":{{"value":"{}","unit":"-","status":"OK","timestamp":"{}"}}}}}})",
+            sequence, timestamp, gear, gearStatus, timestamp,
+            speed, timestamp,
+            temp, tempStatus, timestamp,
+            torque, timestamp,
+            (gear == 0 ? "NEUTRAL" : (gear == 1 ? "DRIVE" : "GEAR_" + std::to_string(gear))), timestamp
         );
     }
 
     std::string generateBrakeData(int sequence) {
-        std::uniform_real_distribution<double> pressureDist(0, 100);
+        std::uniform_real_distribution<double> frontPressureDist(0, 12000); // kPa
+        std::uniform_real_distribution<double> rearPressureDist(0, 10000);
         std::uniform_int_distribution<int> absDist(0, 1);
+        std::uniform_int_distribution<int> ebdDist(0, 1);
+        std::uniform_real_distribution<double> brakeTempDist(20, 150);
 
-        double pressure = pressureDist(brake_rng_);
+        double frontPressure = frontPressureDist(brake_rng_);
+        double rearPressure = rearPressureDist(brake_rng_);
         bool absActive = absDist(brake_rng_) == 1;
+        bool ebdActive = ebdDist(brake_rng_) == 1;
+        double brakeTemp = brakeTempDist(brake_rng_);
+
+        std::string timestamp = getISOTimestamp();
+        std::string absStatus = absActive ? "ACTIVE" : "INACTIVE";
+        std::string pressureStatus = (frontPressure > 10000 || rearPressure > 8000) ? "WARNING" : "OK";
 
         return fmt::format(
-            R"({{"id":"brake-{:06d}","ecuId":"brake","data":{{"brake_pressure":"{:.1f}","abs_active":"{}"}}}})",
-            sequence, pressure, absActive ? "true" : "false"
+            R"({{"id":"BCM-BRK-{:06d}","ecuId":"BCM-BrakeControlModule","timestamp":"{}","data":{{"FrontBrakePressure_kPa":{{"value":{:.1f},"unit":"kPa","status":"{}","timestamp":"{}"}},"RearBrakePressure_kPa":{{"value":{:.1f},"unit":"kPa","status":"OK","timestamp":"{}"}},"ABSStatus":{{"value":"{}","unit":"-","status":"{}","timestamp":"{}"}},"EBDActive":{{"value":"{}","unit":"-","status":"OK","timestamp":"{}"}},"BrakeDiscTemperature_C":{{"value":{:.1f},"unit":"C","status":"OK","timestamp":"{}"}}}}}})",
+            sequence, timestamp, frontPressure, pressureStatus, timestamp,
+            rearPressure, timestamp,
+            (absActive ? "ACTIVE" : "INACTIVE"), absStatus, timestamp,
+            (ebdActive ? "TRUE" : "FALSE"), timestamp,
+            brakeTemp, timestamp
         );
     }
 
     std::string generateBatteryData(int sequence) {
-        std::uniform_real_distribution<double> voltageDist(11.5, 14.5);
-        std::uniform_real_distribution<double> currentDist(-50, 50);
-        std::uniform_real_distribution<double> tempDist(15, 35);
-        std::uniform_real_distribution<double> socDist(20, 100);
+        std::uniform_real_distribution<double> voltageDist(11.8, 14.2);
+        std::uniform_real_distribution<double> currentDist(-60, 80);
+        std::uniform_real_distribution<double> tempDist(15, 40);
+        std::uniform_real_distribution<double> socDist(25, 100);
+        std::uniform_real_distribution<double> healthDist(80, 100);
 
         double voltage = voltageDist(battery_rng_);
         double current = currentDist(battery_rng_);
         double temp = tempDist(battery_rng_);
         double soc = socDist(battery_rng_);
+        double health = healthDist(battery_rng_);
+
+        std::string timestamp = getISOTimestamp();
+        std::string voltageStatus = getStatus(voltage, 11.5, 14.5, 12.0, 14.0);
+        std::string socStatus = getStatus(soc, 20, 100, 30, 100);
+        std::string tempStatus = getStatus(temp, 0, 50, 10, 35);
+        std::string healthStatus = getStatus(health, 0, 100, 70, 100);
 
         return fmt::format(
-            R"({{"id":"battery-{:06d}","ecuId":"battery","data":{{"voltage":"{:.2f}","current":"{:.2f}","temperature":"{:.1f}","state_of_charge":"{:.1f}"}}}})",
-            sequence, voltage, current, temp, soc
+            R"({{"id":"BMS-BAT-{:06d}","ecuId":"BMS-BatteryManagementSystem","timestamp":"{}","data":{{"BatteryVoltage_V":{{"value":{:.2f},"unit":"V","status":"{}","timestamp":"{}"}},"BatteryCurrent_A":{{"value":{:.2f},"unit":"A","status":"OK","timestamp":"{}"}},"BatteryTemperature_C":{{"value":{:.1f},"unit":"C","status":"{}","timestamp":"{}"}},"StateOfCharge_Percent":{{"value":{:.1f},"unit":"%","status":"{}","timestamp":"{}"}},"BatteryHealth_Percent":{{"value":{:.1f},"unit":"%","status":"{}","timestamp":"{}"}}}}}})",
+            sequence, timestamp, voltage, voltageStatus, timestamp,
+            current, timestamp,
+            temp, tempStatus, timestamp,
+            soc, socStatus, timestamp,
+            health, healthStatus, timestamp
         );
     }
 
@@ -146,7 +216,7 @@ public:
         fmt::print("Starting ECU simulator...\n");
         fmt::print("  Duration: {} seconds\n", durationSeconds);
         fmt::print("  Interval: {} ms\n", intervalMs);
-        fmt::print("  ECUs: engine, transmission, brake, battery\n\n");
+        fmt::print("  ECUs: PCM-PowertrainControlModule, TCM-TransmissionControlModule, BCM-BrakeControlModule, BMS-BatteryManagementSystem\n\n");
 
         while (running_) {
             auto now = std::chrono::steady_clock::now();
@@ -158,10 +228,10 @@ public:
 
             // Generate data from all ECUs
             std::vector<std::pair<std::string, std::string>> ecuData = {
-                {"engine", generateEngineData(sequence)},
-                {"transmission", generateTransmissionData(sequence)},
-                {"brake", generateBrakeData(sequence)},
-                {"battery", generateBatteryData(sequence)}
+                {"PCM-PowertrainControlModule", generateEngineData(sequence)},
+                {"TCM-TransmissionControlModule", generateTransmissionData(sequence)},
+                {"BCM-BrakeControlModule", generateBrakeData(sequence)},
+                {"BMS-BatteryManagementSystem", generateBatteryData(sequence)}
             };
 
             // Send each ECU's data

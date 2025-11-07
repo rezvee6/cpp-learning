@@ -74,7 +74,7 @@ Or with custom parameters:
 The simulator will:
 
 - Connect to the gateway on port 8080
-- Generate data from 4 ECUs: engine, transmission, brake, battery
+- Generate data from 4 ECUs: PCM-PowertrainControlModule, TCM-TransmissionControlModule, BCM-BrakeControlModule, BMS-BatteryManagementSystem
 - Send data every second (or custom interval)
 - Run for 60 seconds (or custom duration)
 
@@ -103,25 +103,41 @@ curl http://localhost:8081/api/ecus
 Expected response (after simulator sends data):
 
 ```json
-{ "ecus": ["engine", "transmission", "brake", "battery"] }
+{
+  "ecus": [
+    "PCM-PowertrainControlModule",
+    "TCM-TransmissionControlModule",
+    "BCM-BrakeControlModule",
+    "BMS-BatteryManagementSystem"
+  ]
+}
 ```
 
 #### Get Specific ECU Data
 
 ```bash
-curl http://localhost:8081/api/ecus/engine
+curl http://localhost:8081/api/ecus/PCM-PowertrainControlModule
 ```
 
 Expected response:
 
 ```json
 {
-  "ecuId": "engine",
+  "ecuId": "PCM-PowertrainControlModule",
   "data": {
-    "rpm": "2500",
-    "temperature": "85.5",
-    "pressure": "1.2",
-    "throttle_position": "45.0"
+    "EngineSpeed_RPM": {
+      "value": 2500,
+      "unit": "RPM",
+      "status": "OK",
+      "timestamp": "2024-01-15T10:30:45.123Z"
+    },
+    "CoolantTemperature_C": {
+      "value": 85.5,
+      "unit": "C",
+      "status": "OK",
+      "timestamp": "2024-01-15T10:30:45.123Z"
+    },
+    ...
   }
 }
 ```
@@ -129,9 +145,9 @@ Expected response:
 Try other ECUs:
 
 ```bash
-curl http://localhost:8081/api/ecus/transmission
-curl http://localhost:8081/api/ecus/brake
-curl http://localhost:8081/api/ecus/battery
+curl http://localhost:8081/api/ecus/TCM-TransmissionControlModule
+curl http://localhost:8081/api/ecus/BCM-BrakeControlModule
+curl http://localhost:8081/api/ecus/BMS-BatteryManagementSystem
 ```
 
 #### Get All ECU Data
@@ -144,19 +160,35 @@ Expected response:
 
 ```json
 {
-  "engine": {
-    "rpm": "2500",
-    "temperature": "85.5",
-    "pressure": "1.2",
-    "throttle_position": "45.0"
+  "PCM-PowertrainControlModule": {
+    "EngineSpeed_RPM": {
+      "value": 2500,
+      "unit": "RPM",
+      "status": "OK",
+      "timestamp": "2024-01-15T10:30:45.123Z"
+    },
+    "CoolantTemperature_C": {
+      "value": 85.5,
+      "unit": "C",
+      "status": "OK",
+      "timestamp": "2024-01-15T10:30:45.123Z"
+    },
+    ...
   },
-  "transmission": { "gear": "4", "speed": "60.5", "temperature": "75.0" },
-  "brake": { "brake_pressure": "50.0", "abs_active": "true" },
-  "battery": {
-    "voltage": "12.5",
-    "current": "2.3",
-    "temperature": "25.0",
-    "state_of_charge": "85.0"
+  "TCM-TransmissionControlModule": {
+    "CurrentGear": { "value": 4, "unit": "-", "status": "OK", "timestamp": "..." },
+    "VehicleSpeed_kmh": { "value": 60.5, "unit": "km/h", "status": "OK", "timestamp": "..." },
+    ...
+  },
+  "BCM-BrakeControlModule": {
+    "FrontBrakePressure_kPa": { "value": 5000.0, "unit": "kPa", "status": "OK", "timestamp": "..." },
+    "ABSStatus": { "value": "INACTIVE", "unit": "-", "status": "INACTIVE", "timestamp": "..." },
+    ...
+  },
+  "BMS-BatteryManagementSystem": {
+    "BatteryVoltage_V": { "value": 12.5, "unit": "V", "status": "OK", "timestamp": "..." },
+    "BatteryCurrent_A": { "value": 2.3, "unit": "A", "status": "OK", "timestamp": "..." },
+    ...
   }
 }
 ```
@@ -180,7 +212,7 @@ You can also test the REST API in your browser:
 - Health: http://localhost:8081/health
 - List ECUs: http://localhost:8081/api/ecus
 - All Data: http://localhost:8081/api/data
-- Specific ECU: http://localhost:8081/api/ecus/engine
+- Specific ECU: http://localhost:8081/api/ecus/PCM-PowertrainControlModule
 
 ## Continuous Testing
 
@@ -240,18 +272,21 @@ The project includes a stress test tool to test the gateway under high load.
 ### Running Stress Tests
 
 1. **Start the gateway** (in Terminal 1):
+
    ```bash
    cd build
    ./src/cpp-messgage-queue
    ```
 
 2. **Run the stress test** (in Terminal 2):
+
    ```bash
    cd build
    ./tools/stress_test [connections] [msgs_per_conn] [interval_ms] [http_duration] [http_rps]
    ```
 
    Default parameters:
+
    - `connections`: 10 concurrent TCP connections
    - `msgs_per_conn`: 100 messages per connection
    - `interval_ms`: 10ms between messages (100 msg/s per connection)
@@ -261,21 +296,25 @@ The project includes a stress test tool to test the gateway under high load.
 ### Example Stress Test Scenarios
 
 **Light Load:**
+
 ```bash
 ./tools/stress_test 5 50 50 10 10
 ```
 
 **Medium Load:**
+
 ```bash
 ./tools/stress_test 10 100 10 30 50
 ```
 
 **Heavy Load:**
+
 ```bash
 ./tools/stress_test 50 200 5 60 100
 ```
 
 **Extreme Load:**
+
 ```bash
 ./tools/stress_test 100 500 1 120 200
 ```
@@ -283,11 +322,13 @@ The project includes a stress test tool to test the gateway under high load.
 ### What the Stress Test Does
 
 1. **TCP Load Testing:**
+
    - Creates multiple concurrent connections to the gateway
    - Sends ECU data messages at high frequency
    - Monitors success/failure rates
 
 2. **HTTP Load Testing:**
+
    - Concurrently tests all REST API endpoints
    - Tests: `/health`, `/api/ecus`, `/api/data`, and individual ECU endpoints
    - Measures response times and success rates
@@ -303,6 +344,7 @@ The project includes a stress test tool to test the gateway under high load.
 ### Quick Stress Test Runner
 
 Use the provided script for interactive stress testing:
+
 ```bash
 ./run_stress_test.sh
 ```
