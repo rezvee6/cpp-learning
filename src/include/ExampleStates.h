@@ -55,7 +55,8 @@ public:
                  StateMachine& stateMachine) override {
         if (eventName == "init_complete") {
             fmt::print("[InitState] Initialization completed, ready to transition\n");
-            return true;
+            // Return false to allow the transition to proceed
+            return false;
         }
         return false;
     }
@@ -155,10 +156,12 @@ public:
                  StateMachine& stateMachine) override {
         if (eventName == "recover") {
             fmt::print("[ErrorState] Recovery initiated\n");
-            return true;
+            // Return false to allow the transition to proceed
+            return false;
         } else if (eventName == "retry") {
             fmt::print("[ErrorState] Retry attempt requested\n");
-            return true;
+            // Return false to allow retry transitions if configured
+            return false;
         }
         return false;
     }

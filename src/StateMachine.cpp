@@ -215,7 +215,13 @@ StatePtr StateMachine::getCurrentStatePtr() const {
     if (currentState_.empty()) {
         return nullptr;
     }
-    return getState(currentState_);
+    // Don't call getState() here - it would try to acquire the same lock
+    // Instead, directly access states_ since we already hold the lock
+    auto it = states_.find(currentState_);
+    if (it != states_.end()) {
+        return it->second;
+    }
+    return nullptr;
 }
 
 StatePtr StateMachine::getState(const std::string& name) const {

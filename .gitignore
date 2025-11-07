@@ -1,3 +1,9 @@
-build/*
+build/
+coverage/
+*.gcda
+*.gcno
+*.gcov
+coverage.info
+*.profdata*
 docs/*
 .DS_Store

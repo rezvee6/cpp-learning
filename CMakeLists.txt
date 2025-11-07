@@ -8,4 +8,12 @@ find_package(fmt REQUIRED)
 
 # Add Conan dependencies
 enable_testing()
+
+# Add source directory
 add_subdirectory(src)
+
+# Add tests if requested
+option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

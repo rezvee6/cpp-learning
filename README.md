@@ -175,6 +175,63 @@ Or use the provided build script:
 ./build.sh run
 ```
 
+## Testing
+
+### Running Tests
+
+The project includes comprehensive unit tests using Google Test (GTest).
+
+**Run tests:**
+
+```bash
+./build.sh test
+```
+
+**Run tests with coverage:**
+
+```bash
+./build.sh coverage
+```
+
+This will:
+
+1. Build all tests with coverage enabled
+2. Run all unit tests
+3. Generate a coverage report (if lcov is installed)
+
+### Test Coverage
+
+To view coverage reports:
+
+1. Install lcov (if not already installed):
+
+   ```bash
+   # macOS
+   brew install lcov
+
+   # Ubuntu/Debian
+   sudo apt-get install lcov
+   ```
+
+2. Run tests with coverage:
+
+   ```bash
+   ./build.sh coverage
+   ```
+
+3. Open the HTML report:
+   ```bash
+   open coverage/html/index.html  # macOS
+   xdg-open coverage/html/index.html  # Linux
+   ```
+
+### Test Structure
+
+- `tests/test_message_queue.cpp` - MessageQueue unit tests
+- `tests/test_message_handler.cpp` - MessageHandler unit tests
+- `tests/test_state_machine.cpp` - StateMachine unit tests
+- `tests/test_integration.cpp` - Integration tests for both systems
+
 ## Documentation
 
 ### Generating Documentation
