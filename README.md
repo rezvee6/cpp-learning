@@ -557,6 +557,15 @@ See [TESTING.md](TESTING.md) for detailed testing instructions and examples.
 
 All public methods of `MessageQueue`, `MessageHandler`, and `StateMachine` are thread-safe and can be called from multiple threads concurrently.
 
+## Future Plans
+
+See [PLANNING.md](PLANNING.md) for future goals and planned features, including:
+
+- Raspberry Pi deployment and performance testing
+- Performance optimizations
+- Enhanced features and capabilities
+- Technical debt items
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

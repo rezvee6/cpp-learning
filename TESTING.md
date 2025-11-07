@@ -232,3 +232,79 @@ kill -9 <PID>
 - Make sure the simulator is running and connected
 - Wait a few seconds for data to arrive
 - Check the gateway terminal for error messages
+
+## Stress Testing
+
+The project includes a stress test tool to test the gateway under high load.
+
+### Running Stress Tests
+
+1. **Start the gateway** (in Terminal 1):
+   ```bash
+   cd build
+   ./src/cpp-messgage-queue
+   ```
+
+2. **Run the stress test** (in Terminal 2):
+   ```bash
+   cd build
+   ./tools/stress_test [connections] [msgs_per_conn] [interval_ms] [http_duration] [http_rps]
+   ```
+
+   Default parameters:
+   - `connections`: 10 concurrent TCP connections
+   - `msgs_per_conn`: 100 messages per connection
+   - `interval_ms`: 10ms between messages (100 msg/s per connection)
+   - `http_duration`: 30 seconds of HTTP load testing
+   - `http_rps`: 50 requests per second
+
+### Example Stress Test Scenarios
+
+**Light Load:**
+```bash
+./tools/stress_test 5 50 50 10 10
+```
+
+**Medium Load:**
+```bash
+./tools/stress_test 10 100 10 30 50
+```
+
+**Heavy Load:**
+```bash
+./tools/stress_test 50 200 5 60 100
+```
+
+**Extreme Load:**
+```bash
+./tools/stress_test 100 500 1 120 200
+```
+
+### What the Stress Test Does
+
+1. **TCP Load Testing:**
+   - Creates multiple concurrent connections to the gateway
+   - Sends ECU data messages at high frequency
+   - Monitors success/failure rates
+
+2. **HTTP Load Testing:**
+   - Concurrently tests all REST API endpoints
+   - Tests: `/health`, `/api/ecus`, `/api/data`, and individual ECU endpoints
+   - Measures response times and success rates
+
+3. **Metrics Reported:**
+   - Total messages sent
+   - Failed messages
+   - Success rate percentage
+   - HTTP requests made
+   - HTTP failures
+   - HTTP success rate
+
+### Quick Stress Test Runner
+
+Use the provided script for interactive stress testing:
+```bash
+./run_stress_test.sh
+```
+
+This will prompt you to select a pre-configured scenario or create a custom test.
